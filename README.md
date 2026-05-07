@@ -40,7 +40,26 @@ The ILCD / EU Environmental Footprint system uses three indicators
 computes a Data Quality Rating (DQR) for reporting purposes.
 
 ---
+## Installation
 
+Clone the repo:
+
+    git clone https://github.com/ESique82/lcaStats-R.git
+
+Open `HFI_Digital.Rproj` in RStudio. Then install the required packages if needed:
+
+    install.packages(c("shiny", "ggplot2", "writexl"))
+
+## Running the Shiny app
+
+    shiny::runApp("shiny_app_v2.R")
+
+## Running the pipeline directly
+
+    source("pedigree_R.R")
+    source("monte_carlo.R")
+    source("example_monte_carlo.R")
+---    
 ## Quickstart
 
 ```r
