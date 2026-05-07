@@ -1,0 +1,1 @@
+shiny::runApp("shiny_app_v2.R")

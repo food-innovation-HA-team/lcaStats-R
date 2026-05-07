@@ -1,0 +1,2 @@
+source("pedigree_R.R")
+source("monte_carlo.R")

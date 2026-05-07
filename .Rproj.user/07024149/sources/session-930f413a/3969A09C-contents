@@ -1,0 +1,319 @@
+# pedigree.R
+# ----------
+# Convert ecoinvent Data Quality Indicator (DQI) scores into lognormal
+# uncertainty parameters for Life Cycle Assessment.
+#
+# Based on the pedigree matrix approach described in:
+#
+#   Weidema, B.P., et al. (2013). Overview and methodology: Data quality
+#   guideline for the ecoinvent database version 3. Ecoinvent Report 1(v3).
+#   St. Gallen: The ecoinvent Centre.
+#
+#   Frischknecht, R., et al. (2005). The ecoinvent database: Overview and
+#   methodological framework. International Journal of Life Cycle Assessment,
+#   10(1), 3-9. https://doi.org/10.1065/lca2004.10.181.1
+#
+# The five Data Quality Indicators (DQI):
+#   1 = best quality / most representative
+#   5 = worst quality / least representative
+#
+# NOTE ON VALUES
+# The sigma2_ln values in PEDIGREE_TABLE are taken from Weidema et al. (2013).
+# Users should verify these against Table 5 of the primary source before use
+# in peer-reviewed work.
+
+#' @keywords internal
+PEDIGREE_TABLE <- list(
+  reliability = c(
+    "1" = 0.0000,
+    "2" = 0.0001,
+    "3" = 0.0006,
+    "4" = 0.0006,
+    "5" = 0.0208
+  ),
+  completeness = c(
+    "1" = 0.0000,
+    "2" = 0.0001,
+    "3" = 0.0002,
+    "4" = 0.0006,
+    "5" = 0.0130
+  ),
+  temporal_correlation = c(
+    "1" = 0.0000,
+    "2" = 0.0001,
+    "3" = 0.0002,
+    "4" = 0.0008,
+    "5" = 0.0080
+  ),
+  geographical_correlation = c(
+    "1" = 0.0000,
+    "2" = 0.0001,
+    "3" = 0.0002,
+    "4" = 0.0002,
+    "5" = 0.0040
+  ),
+  technology_correlation = c(
+    "1" = 0.0000,
+    "2" = 0.0001,
+    "3" = 0.0008,
+    "4" = 0.0080,
+    "5" = 0.0120
+  )
+)
+
+
+#' @keywords internal
+INDICATOR_LABELS <- c(
+  reliability              = "Reliability",
+  completeness             = "Completeness",
+  temporal_correlation     = "Temporal correlation",
+  geographical_correlation = "Geographical correlation",
+  technology_correlation   = "Further technology correlation"
+)
+
+  
+  # Core functions
+  # ---------------------------------------------------------------------------
+  
+  #' Look up additional variance for a single DQI score
+  #'
+  #' Returns the additional log-space variance (sigma^2_ln) associated with
+  #' a given Data Quality Indicator and score, as defined in the ecoinvent
+  #' pedigree matrix (Weidema et al., 2013).
+  #'
+  #' @param indicator Character. One of: \code{"reliability"},
+  #'   \code{"completeness"}, \code{"temporal_correlation"},
+  #'   \code{"geographical_correlation"}, \code{"technology_correlation"}.
+  #' @param score Integer. Data quality score (1 = best, 5 = worst).
+  #'
+  #' @return Numeric. Additional variance in log-space (sigma^2_ln).
+  #'
+  #' @references
+  #' Weidema, B.P., et al. (2013). \emph{Overview and methodology: Data quality
+  #' guideline for the ecoinvent database version 3.} Ecoinvent Report 1(v3).
+  #' The ecoinvent Centre, St. Gallen.
+  #'
+  #' @examples
+  #' dqi_to_variance("reliability", 3)   # returns 0.0006
+  #' dqi_to_variance("completeness", 1)  # returns 0.0000
+  #'
+  #' @export
+  dqi_to_variance <- function(indicator, score) {
+    if (!indicator %in% names(PEDIGREE_TABLE)) {
+      stop(
+        sprintf(
+          "Unknown indicator '%s'. Valid options: %s",
+          indicator,
+          paste(names(PEDIGREE_TABLE), collapse = ", ")
+        )
+      )
+    }
+    if (!score %in% 1:5) {
+      stop(sprintf("Score must be an integer between 1 and 5, got %s.", score))
+    }
+    PEDIGREE_TABLE[[indicator]][as.character(score)]
+  }
+  
+
+
+INDICATOR_LABELS
+dqi_to_variance("reliability", 3)
+
+dqi_to_variance("reliability", 1)   # perfect quality → 0.0000
+dqi_to_variance("reliability", 5)   # worst quality  → 0.0208
+dqi_to_variance("technology_correlation", 4)  # → 0.0080
+
+
+
+# Expected: 0.0006 + 0.0001 + 0.0001 + 0.0002 + 0.0000 + 0.0001 = 0.0011
+#' Combine basic uncertainty with all five pedigree indicator variances
+#'
+#' Computes the total variance in log-space by summing the basic uncertainty
+#' variance and the additional variance contributed by each of the five
+#' pedigree indicators. The combination assumes independence between
+#' uncertainty sources, consistent with the ecoinvent methodology.
+#'
+#' @param reliability Integer. DQI score for reliability (1-5).
+#' @param completeness Integer. DQI score for completeness (1-5).
+#' @param temporal_correlation Integer. DQI score for temporal correlation (1-5).
+#' @param geographical_correlation Integer. DQI score for geographical
+#'   correlation (1-5).
+#' @param technology_correlation Integer. DQI score for further technology
+#'   correlation (1-5).
+#' @param basic_var Numeric. Basic uncertainty expressed as variance in
+#'   log-space (sigma^2_ln). A typical default for ecoinvent exchanges is
+#'   0.0006. Check the exchange-specific value in your database.
+#'
+#' @return Numeric. Combined variance in log-space (sigma^2_ln_total).
+#'
+#' @examples
+#' scores_to_combined_variance(2, 2, 3, 1, 2, basic_var = 0.0006)
+#'
+#' @export
+scores_to_combined_variance <- function(reliability,
+                                        completeness,
+                                        temporal_correlation,
+                                        geographical_correlation,
+                                        technology_correlation,
+                                        basic_var) {
+  if (basic_var < 0) {
+    stop(sprintf("basic_var must be >= 0, got %s.", basic_var))
+  }
+  
+  pedigree_var <- sum(
+    dqi_to_variance("reliability",              reliability),
+    dqi_to_variance("completeness",             completeness),
+    dqi_to_variance("temporal_correlation",     temporal_correlation),
+    dqi_to_variance("geographical_correlation", geographical_correlation),
+    dqi_to_variance("technology_correlation",   technology_correlation)
+  )
+  
+  basic_var + pedigree_var
+}
+scores_to_combined_variance(2, 2, 3, 1, 2, basic_var = 0.0006)
+
+#' Full pipeline: DQI scores to lognormal uncertainty parameters
+#'
+#' Converts five DQI scores and a basic uncertainty variance into a complete
+#' uncertainty summary including GSD^2 (the ecoinvent uncertainty metric)
+#' and the lognormal parameters needed for Monte Carlo simulation.
+#'
+#' @inheritParams scores_to_combined_variance
+#'
+#' @return A named list with the following elements:
+#'   \describe{
+#'     \item{combined_var}{Total sigma^2_ln (basic + all pedigree contributions).}
+#'     \item{gsd2}{GSD^2 = exp(sigma^2_ln), the ecoinvent uncertainty metric.}
+#'     \item{gsd}{Geometric standard deviation = sqrt(GSD^2).}
+#'     \item{sigma_ln}{Std dev of ln(X); pass directly to \code{rlnorm()}.}
+#'     \item{basic_var}{The basic variance as supplied.}
+#'     \item{indicator_vars}{Named numeric vector of per-indicator variances.}
+#'   }
+#'
+#' @references
+#' Weidema, B.P., et al. (2013). \emph{Overview and methodology: Data quality
+#' guideline for the ecoinvent database version 3.} Ecoinvent Report 1(v3).
+#' The ecoinvent Centre, St. Gallen.
+#'
+#' @examples
+#' result <- scores_to_gsd2(
+#'   reliability = 2, completeness = 2, temporal_correlation = 3,
+#'   geographical_correlation = 1, technology_correlation = 2,
+#'   basic_var = 0.0006
+#' )
+#' result$gsd2
+#' result$sigma_ln
+#'
+#' @export
+scores_to_gsd2 <- function(reliability,
+                           completeness,
+                           temporal_correlation,
+                           geographical_correlation,
+                           technology_correlation,
+                           basic_var) {
+  
+  scores <- list(
+    reliability              = reliability,
+    completeness             = completeness,
+    temporal_correlation     = temporal_correlation,
+    geographical_correlation = geographical_correlation,
+    technology_correlation   = technology_correlation
+  )
+  
+  indicator_vars <- sapply(
+    names(scores),
+    function(ind) dqi_to_variance(ind, scores[[ind]])
+  )
+  
+  combined_var <- basic_var + sum(indicator_vars)
+  gsd2         <- exp(combined_var)
+  
+  list(
+    combined_var   = combined_var,
+    gsd2           = gsd2,
+    gsd            = sqrt(gsd2),
+    sigma_ln       = sqrt(combined_var),
+    basic_var      = basic_var,
+    indicator_vars = indicator_vars
+  )
+}
+
+
+#' Compute lognormal distribution parameters for Monte Carlo sampling
+#'
+#' Returns the mu_ln and sigma_ln parameters of a lognormal distribution
+#' given the desired arithmetic mean and log-space standard deviation.
+#' These can be passed directly to \code{\link[stats]{rlnorm}}.
+#'
+#' @param mean Numeric. Arithmetic mean of the exchange (e.g. the inventory
+#'   value). Must be > 0.
+#' @param sigma_ln Numeric. Standard deviation of ln(X), from
+#'   \code{scores_to_gsd2()$sigma_ln}.
+#'
+#' @return Named numeric vector with elements \code{mu_ln} and
+#'   \code{sigma_ln}.
+#'
+#' @details
+#' For a lognormal distribution:
+#'   \deqn{\mu_{ln} = \ln(\text{mean}) - 0.5 \cdot \sigma_{ln}^2}
+#'
+#' @examples
+#' result  <- scores_to_gsd2(2, 2, 3, 1, 2, basic_var = 0.0006)
+#' params  <- lognormal_params(mean = 1.5, sigma_ln = result$sigma_ln)
+#' samples <- rlnorm(10000, meanlog = params["mu_ln"], sdlog = params["sigma_ln"])
+#'
+#' @export
+lognormal_params <- function(mean, sigma_ln) {
+  if (mean <= 0) {
+    stop(sprintf(
+      "mean must be > 0 for a lognormal distribution, got %s.", mean
+    ))
+  }
+  mu_ln <- log(mean) - 0.5 * sigma_ln^2
+  c(mu_ln = mu_ln, sigma_ln = sigma_ln)
+}
+
+result <- scores_to_gsd2(
+  reliability              = 5,
+  completeness             = 4,
+  temporal_correlation     = 5,
+  geographical_correlation = 4,
+  technology_correlation   = 5,
+  basic_var                = 0.006
+)
+
+result$combined_var    # total σ²_ln
+result$gsd2            # ecoinvent uncertainty metric
+result$sigma_ln        # what rlnorm() needs as sdlog
+result$indicator_vars  # per-indicator breakdown
+
+
+params  <- lognormal_params(mean = 1.5, sigma_ln = result$sigma_ln)
+
+samples <- rlnorm(10000, meanlog = params["mu_ln"], sdlog = params["sigma_ln"])
+
+cat("Target mean:    1.5\n")
+cat("Simulated mean:", round(mean(samples), 4), "\n")
+cat("GSD²:          ", round(result$gsd2, 4), "\n")
+
+hist(samples, breaks = 60,
+     main = "Lognormal samples — pedigree uncertainty",
+     xlab = "Exchange value")
+
+# Good quality samples (rerun with original scores)
+result_good <- scores_to_gsd2(2, 2, 3, 1, 2, basic_var = 0.0006)
+params_good <- lognormal_params(mean = 1.5, sigma_ln = result_good$sigma_ln)
+samples_good <- rlnorm(10000, meanlog = params_good["mu_ln"], 
+                       sdlog = params_good["sigma_ln"])
+
+# Poor quality already in result / samples from above
+
+plot(density(samples), col = "firebrick", lwd = 2,
+     main = "Effect of data quality on lognormal uncertainty",
+     xlab = "Exchange value", xlim = c(0, 5))
+lines(density(samples_good), col = "steelblue", lwd = 2)
+abline(v = 1.5, lty = 2, col = "grey40")
+legend("topright",
+       legend = c(sprintf("Poor quality  GSD²=%.3f", result$gsd2),
+                  sprintf("Good quality  GSD²=%.4f", result_good$gsd2)),
+       col = c("firebrick", "steelblue"), lwd = 2)

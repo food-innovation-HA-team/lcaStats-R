@@ -1,0 +1,320 @@
+---
+title: "Pedigree uncertainty in LCA: a worked example"
+author: "lcaStats · Harper Food Innovation: Digital"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Pedigree uncertainty in LCA: a worked example}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+bibliography: references.bib
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.width  = 7,
+  fig.height = 4.5,
+  dpi = 150
+)
+```
+
+## Introduction
+
+Uncertainty is an unavoidable feature of life cycle assessment (LCA). The 
+pedigree matrix, introduced by @weidema1996 and formalised for ecoinvent v3 
+by @weidema2013, provides a systematic method for converting expert judgements 
+about data quality into quantitative uncertainty estimates. Each inventory 
+exchange is rated across five **Data Quality Indicators (DQIs)**:
+
+| Indicator | Question |
+|---|---|
+| **Reliability** | How well does the source measure what we need? |
+| **Completeness** | How fully does the data cover the relevant population? |
+| **Temporal correlation** | How recent is the data? |
+| **Geographical correlation** | How geographically representative is the data? |
+| **Technology correlation** | How technologically representative is the data? |
+
+Scores range from **1** (best) to **5** (worst). Each score maps to an 
+additional variance term in log-space ($\sigma^2_{ln}$), which is summed with 
+the exchange's basic uncertainty to give a combined lognormal distribution.
+
+This vignette walks through a realistic example using N₂O field emissions 
+from an agricultural system — a common hotspot in food system LCAs.
+
+---
+
+## Setup
+
+```{r load}
+# Source the pedigree module
+# If the package is installed: library(lcaStats)
+source("../R/pedigree.R")
+library(ggplot2)
+library(dplyr)
+```
+
+---
+
+## 1. A single exchange
+
+Consider a direct N₂O field emission factor from a UK arable study, scored 
+as follows:
+
+- **Reliability (3):** Data from a proxy measurement (IPCC Tier 1 approach), 
+  not a direct site measurement.
+- **Completeness (2):** Based on multiple UK sites covering the main 
+  production regions.
+- **Temporal correlation (3):** Data are 8–12 years old relative to the 
+  study reference year.
+- **Geographical correlation (1):** UK-specific data, perfectly matched.
+- **Technology correlation (2):** Conventional arable, closely matching the 
+  system under study.
+
+```{r single}
+result <- scores_to_gsd2(
+  reliability              = 3,
+  completeness             = 2,
+  temporal_correlation     = 3,
+  geographical_correlation = 1,
+  technology_correlation   = 2,
+  basic_var                = 0.0006
+)
+
+pedigree_summary(result, exchange_name = "N2O field emission — UK arable")
+```
+
+The **GSD²** is the ecoinvent standard for expressing lognormal uncertainty. 
+A GSD² of `r round(result$gsd2, 3)` indicates relatively modest uncertainty 
+— the 97.5th percentile is approximately `r round(result$gsd, 2)` times the 
+median.
+
+---
+
+## 2. Monte Carlo sampling
+
+Using the lognormal parameters, we can draw a sample distribution for this 
+exchange. Suppose the inventory value (arithmetic mean) is 
+**0.014 kg N₂O-N per kg N applied**.
+
+```{r mc}
+params  <- lognormal_params(mean = 0.014, sigma_ln = result$sigma_ln)
+set.seed(123)
+samples <- rlnorm(50000, meanlog = params["mu_ln"], sdlog = params["sigma_ln"])
+
+cat(sprintf(
+  "Mean:         %.5f\nMedian:       %.5f\n2.5th pct:    %.5f\n97.5th pct:   %.5f\n",
+  mean(samples), median(samples),
+  quantile(samples, 0.025), quantile(samples, 0.975)
+))
+```
+
+```{r mc-plot, fig.cap = "Lognormal distribution for the N2O field emission factor (n = 50,000 draws). Dashed line = median; dotted lines = 2.5th and 97.5th percentiles."}
+df_samples <- data.frame(value = samples)
+p025 <- quantile(samples, 0.025)
+p975 <- quantile(samples, 0.975)
+p50  <- median(samples)
+
+ggplot(df_samples, aes(x = value)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 80, fill = "#2e7d52", alpha = 0.75, colour = NA) +
+  geom_vline(xintercept = p50,  linetype = "dashed", colour = "#111",
+             linewidth = 0.9, show.legend = TRUE) +
+  geom_vline(xintercept = p025, linetype = "dotted", colour = "#b55",
+             linewidth = 0.9) +
+  geom_vline(xintercept = p975, linetype = "dotted", colour = "#b55",
+             linewidth = 0.9) +
+  labs(
+    x = expression("N"[2]*"O-N emission factor (kg kg N"^{-1}*")"),
+    y = "Density",
+    title = "Lognormal uncertainty distribution",
+    subtitle = "N\u2082O field emission \u2014 UK arable system"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
+```
+
+---
+
+## 3. Variance breakdown — what drives the uncertainty?
+
+A key output of the pedigree approach is understanding which indicators 
+contribute most to total uncertainty. This informs targeted data collection 
+efforts.
+
+```{r breakdown-plot, fig.cap = "Contribution of each uncertainty source to total variance (sigma^2_ln). Improving the highest-contributing indicator gives the greatest reduction in uncertainty."}
+sources   <- c("Basic uncertainty", names(INDICATOR_LABELS))
+labels    <- c("Basic uncertainty", as.character(INDICATOR_LABELS))
+variances <- c(result$basic_var, result$indicator_vars)
+pct       <- variances / result$combined_var * 100
+
+df_break <- data.frame(
+  source    = factor(labels, levels = rev(labels)),
+  variance  = variances,
+  pct       = pct
+)
+
+ggplot(df_break, aes(x = pct, y = source)) +
+  geom_col(fill = "#1565c0", alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f%%", pct)),
+            hjust = -0.1, size = 3.5, colour = "#333") +
+  scale_x_continuous(
+    limits = c(0, max(pct) * 1.2),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    x = "% of total variance",
+    y = NULL,
+    title = "Pedigree variance breakdown",
+    subtitle = "N\u2082O field emission \u2014 UK arable system"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank())
+```
+
+---
+
+## 4. Batch processing — a multi-exchange inventory
+
+In practice, we apply the pedigree approach across all exchanges in an 
+inventory. Here we demonstrate with a small example inventory covering 
+key inputs and outputs of a wheat production system.
+
+```{r batch}
+inventory <- data.frame(
+  exchange = c(
+    "N2O field emissions",
+    "Diesel — field operations",
+    "Nitrogen fertiliser (ammonium nitrate)",
+    "Pesticide application",
+    "Wheat grain yield"
+  ),
+  reliability              = c(3L, 2L, 1L, 3L, 2L),
+  completeness             = c(2L, 2L, 2L, 3L, 1L),
+  temporal_correlation     = c(3L, 2L, 1L, 3L, 2L),
+  geographical_correlation = c(1L, 1L, 1L, 2L, 1L),
+  technology_correlation   = c(2L, 2L, 1L, 3L, 2L),
+  basic_var                = rep(0.0006, 5)
+)
+
+results <- batch_from_dataframe(inventory)
+
+# Show key uncertainty columns
+results |>
+  select(exchange, combined_var, gsd2, sigma_ln) |>
+  mutate(across(where(is.numeric), \(x) round(x, 4)))
+```
+
+```{r batch-plot, fig.cap = "GSD^2 across inventory exchanges. Higher values indicate greater uncertainty. Exchanges above the dashed line (GSD^2 = 1.005) would be priority targets for improved data collection."}
+ggplot(results, aes(x = gsd2, y = reorder(exchange, gsd2))) +
+  geom_col(fill = "#2e7d52", alpha = 0.75, width = 0.6) +
+  geom_vline(xintercept = 1.005, linetype = "dashed",
+             colour = "#b55", linewidth = 0.8) +
+  geom_text(aes(label = round(gsd2, 4)),
+            hjust = -0.1, size = 3.5, colour = "#333") +
+  scale_x_continuous(limits = c(1, max(results$gsd2) * 1.15)) +
+  labs(
+    x = "GSD²",
+    y = NULL,
+    title = "Pedigree uncertainty by exchange",
+    subtitle = "Wheat production system — illustrative inventory"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank())
+```
+
+---
+
+## 5. Sensitivity: what if we improve temporal correlation?
+
+A common practical question is: *what would be gained by collecting more 
+recent data?* We can answer this by varying a single indicator score and 
+observing the change in GSD².
+
+```{r sensitivity}
+scores_range <- 1:5
+
+sensitivity <- lapply(scores_range, function(tc_score) {
+  r <- scores_to_gsd2(
+    reliability              = 3,
+    completeness             = 2,
+    temporal_correlation     = tc_score,
+    geographical_correlation = 1,
+    technology_correlation   = 2,
+    basic_var                = 0.0006
+  )
+  data.frame(temporal_score = tc_score, gsd2 = r$gsd2, sigma_ln = r$sigma_ln)
+}) |> bind_rows()
+
+sensitivity
+```
+
+```{r sensitivity-plot, fig.cap = "Effect of temporal correlation score on GSD^2. Each one-point improvement in the score reduces the combined uncertainty."}
+ggplot(sensitivity, aes(x = temporal_score, y = gsd2)) +
+  geom_line(colour = "#1565c0", linewidth = 1) +
+  geom_point(colour = "#1565c0", size = 3) +
+  geom_point(data = sensitivity[sensitivity$temporal_score == 3, ],
+             colour = "#b55", size = 4, shape = 18) +
+  annotate("text", x = 3.15, y = sensitivity$gsd2[3] + 0.0003,
+           label = "Current score (3)", hjust = 0, size = 3.5, colour = "#b55") +
+  scale_x_continuous(breaks = 1:5) +
+  labs(
+    x     = "Temporal correlation score",
+    y     = "GSD²",
+    title = "Sensitivity to temporal correlation",
+    subtitle = "N\u2082O field emission \u2014 all other scores held constant"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
+```
+
+Moving from score 3 to score 1 (using data from within the reference year) 
+would reduce GSD² from `r round(sensitivity$gsd2[3], 4)` to 
+`r round(sensitivity$gsd2[1], 4)` — a worthwhile improvement, though in 
+this case the temporal indicator is not the dominant source of uncertainty 
+(see Section 3).
+
+---
+
+## Summary
+
+This vignette demonstrated:
+
+1. Converting DQI scores for a single exchange into lognormal uncertainty 
+   parameters using `scores_to_gsd2()`.
+2. Drawing Monte Carlo samples with `rlnorm()` for propagation.
+3. Visualising the variance breakdown to identify priority indicators.
+4. Applying the approach in batch across a multi-exchange inventory.
+5. Sensitivity analysis to quantify the benefit of data improvement.
+
+The interactive Shiny app (`inst/shiny/app.R`) provides a point-and-click 
+interface for the same workflow.
+
+---
+
+## References
+
+```{=html}
+<div id="refs"></div>
+```
+
+::: {#refs}
+Frischknecht, R., Jungbluth, N., Althaus, H.-J., Doka, G., Dones, R., Heck,
+T., Hellweg, S., Hischier, R., Nemecek, T., Rebitzer, G., & Spielmann, M.
+(2005). The ecoinvent database: Overview and methodological framework.
+*International Journal of Life Cycle Assessment*, 10(1), 3–9.
+https://doi.org/10.1065/lca2004.10.181.1
+
+Weidema, B. P., & Wesnæs, M. S. (1996). Data quality management for life 
+cycle inventories — an example of using data quality indicators. 
+*Journal of Cleaner Production*, 4(3–4), 167–174.
+https://doi.org/10.1016/S0959-6526(96)00043-1
+
+Weidema, B. P., Bauer, C., Hischier, R., Mutel, C., Nemecek, T., Reinhard,
+J., Vadenbo, C. O., & Wernet, G. (2013). *Overview and methodology: Data
+quality guideline for the ecoinvent database version 3.* Ecoinvent Report
+1(v3). The ecoinvent Centre, St. Gallen.
+:::
