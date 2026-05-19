@@ -288,7 +288,7 @@ server <- function(input, output, session) {
     req(input$csv_upload)
     tryCatch({
       df  <- read.csv(input$csv_upload$datapath)
-      out <- batch_from_csv(df)
+      out <- batch_from_dataframe(df)
 
       output$batch_table <- renderTable(out, striped = TRUE, hover = TRUE,
                                         bordered = TRUE, digits = 6)
